@@ -77,5 +77,5 @@ def5020020a43c0a6b73694a9cf1626ec8f8a859d392664ccdc4b120f18fd6f2f63c48490fb47c8f
 
 ## Скриншоты
 
-![Главная страница приложения](/screenshot1.png)
-!(/screenshot2.png)
+![Главная страница приложения](screenshots/screenshot1.png)
+![](screenshots/screenshot2.png)
