@@ -75,238 +75,158 @@
           "def5020020a43c0a6b73694a9cf1626ec8f8a859d392664ccdc4b120f18fd6f2f63c48490fb47c8fb1b4ec0fb1a9bdb0a69b66589a66734578ab5f6c08e98bedd539c55606393b85bc17a09270d7deb5501bd799d387085d9c2d1079dbb4cace77b2e5e3ea4a9c85e2becff5032a17f6a128cec10b3dfe42bd0bcc90a40d9fbc92886360ca5edfbafb9d1dbcbee10f87f8f4f4b9420869117d8e5c87bd3653deeea05505311896bee341dae53848a729cad13b5ffbc0b543c330d6c3bf4d1d7d716e6142aec51181525e14e6f76ef5f4783a25a9b830c16489dd59315a3618498fe02dc6a68173fc5e28fce7e1b30f001cf6d2dcaf9b966098d982bc5d3705f06a6e40f6b945ce8c5d0360a4584ab3b3cd2aae5b01475c94f8d53132eef1982dbd9ec0c3a37074515dc54b71fdecaac8de9e3c9f98beb1da3291daed8b1e631cb17ec0e7d23f0e54c692408515b9f539c0401db46801f99b0f49d60fa9e081af806d27e369407cb893a2165ede4ca096c28c40634b921775e20b35666797b00072b12810aecf960ab449091a2da2422cd8158f137c4ca24c790d8077c3256808b9b417026420fa64d79652dedaefb29fe4a40f4524f55872fd36c850f2fc3bc12a17602eb8be9b52ce498ea3cd0bc7ac37b46a692fc3ba50a93209173470462a44d5a4acb1e316e761f3dc349a46",
         accountDomain: "absatnurlybek.amocrm.ru",
         requestsPerSecond: 2,
-        batchSize: 2,
+        batchSize: 1, // Увеличил для эффективности
         tokenEndpoint: "https://absatnurlybek.amocrm.ru/oauth2/access_token",
-        clientId: "f75f1b0a-3256-42c1-ae3b-30db4047a221", // из вашего токена
-        client_secret:
+        clientId: "f75f1b0a-3256-42c1-ae3b-30db4047a221",
+        clientSecret:
           "HaNEUIP3CYWILIf9BRsFQYVnEAIhAXJ3ZgAi1orDophZv3gDmlNopXz97zcvHkQ8",
-        redirect_uri: "https://oauth.pstmn.io/v1/callback",
+        redirectUri: "https://oauth.pstmn.io/v1/callback",
       };
 
-      // Глобальные переменные
       let deals = [];
       let contacts = [];
       let expandedDealId = null;
       let lastRequestTime = 0;
       let requestQueue = [];
 
-      // Инициализация при загрузке страницы
-      document.addEventListener("DOMContentLoaded", async function () {
-        await loadDealsAndContacts();
-        renderDealsTable();
-      });
+      // Инициализация
+      document.addEventListener("DOMContentLoaded", init);
 
-      // Функция обновления токена
+      async function init() {
+        try {
+          await loadDealsAndContacts();
+          renderDealsTable();
+        } catch (error) {
+          console.error("Initialization error:", error);
+          alert("Ошибка загрузки данных. Проверьте консоль.");
+        }
+      }
+
+      // Авторизация
       async function refreshAccessToken() {
         try {
           const response = await fetch(config.tokenEndpoint, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               client_id: config.clientId,
+              client_secret: config.clientSecret,
               grant_type: "refresh_token",
               refresh_token: config.refreshToken,
+              redirect_uri: config.redirectUri,
             }),
           });
 
-          if (!response.ok) {
-            throw new Error(`Ошибка обновления токена: ${response.status}`);
-          }
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
           const data = await response.json();
           config.accessToken = data.access_token;
           config.refreshToken = data.refresh_token;
-
-          console.log("Токен успешно обновлен");
+          console.log("Token refreshed");
           return true;
         } catch (error) {
-          console.error("Ошибка при обновлении токена:", error);
+          console.error("Token refresh failed:", error);
           return false;
         }
       }
 
-      async function refreshAccessToken() {
+      // Управление запросами
+      async function fetchWithRateLimit(url, options = {}, retryCount = 0) {
+        if (retryCount > 2) throw new Error("Max retries exceeded");
+
+        const now = Date.now();
+        const delay = Math.max(0, 500 - (now - lastRequestTime));
+        await new Promise((resolve) => setTimeout(resolve, delay));
+
         try {
-          const response = await fetch(config.tokenEndpoint, {
-            method: "POST",
+          lastRequestTime = Date.now();
+          const response = await fetch(url, {
+            ...options,
             headers: {
+              ...options.headers,
+              Authorization: `Bearer ${config.accessToken}`,
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({
-              client_id: config.clientId,
-              client_secret: config.clientSecret, // Добавьте это поле в конфиг
-              grant_type: "refresh_token",
-              refresh_token: config.refreshToken,
-              redirect_uri: config.redirectUri, // Добавьте это поле в конфиг
-            }),
           });
 
-          if (!response.ok) {
-            throw new Error(`Ошибка обновления токена: ${response.status}`);
+          if (response.status === 401) {
+            const refreshed = await refreshAccessToken();
+            if (refreshed)
+              return fetchWithRateLimit(url, options, retryCount + 1);
+            throw new Error("Auth failed");
           }
 
-          const data = await response.json();
-          config.accessToken = data.access_token;
-          config.refreshToken = data.refresh_token;
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-          console.log("Токен успешно обновлен");
-          return true;
+          return await response.json();
         } catch (error) {
-          console.error("Ошибка при обновлении токена:", error);
-          return false;
+          if (error.message.includes("401") && retryCount === 0) {
+            return fetchWithRateLimit(url, options, retryCount + 1);
+          }
+          throw error;
         }
       }
 
-      async function fetchWithRateLimit(url, options = {}) {
-        return new Promise(async (resolve, reject) => {
-          const attemptRequest = async (retryCount = 0) => {
-            if (retryCount > 1) {
-              reject(new Error("Превышено количество попыток запроса"));
-              return;
-            }
-
-            try {
-              const now = Date.now();
-              const timeSinceLastRequest = now - lastRequestTime;
-              const minDelay = 1000 / config.requestsPerSecond;
-
-              if (timeSinceLastRequest < minDelay) {
-                await new Promise((resolve) =>
-                  setTimeout(resolve, minDelay - timeSinceLastRequest)
-                );
-              }
-
-              lastRequestTime = Date.now();
-
-              const fetchOptions = {
-                ...options,
-                headers: {
-                  ...(options.headers || {}),
-                  Authorization: `Bearer ${config.accessToken}`,
-                  "Content-Type": "application/json",
-                },
-              };
-
-              const response = await fetch(url, fetchOptions);
-
-              if (response.status === 401) {
-                console.log("Токен устарел, пытаемся обновить...");
-                const refreshed = await refreshAccessToken();
-                if (refreshed) {
-                  return attemptRequest(retryCount + 1);
-                } else {
-                  throw new Error("Не удалось обновить токен");
-                }
-              }
-
-              if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-              }
-
-              const data = await response.json();
-              resolve(data);
-            } catch (error) {
-              if (error.message.includes("401") && retryCount === 0) {
-                return attemptRequest(retryCount + 1);
-              }
-              reject(error);
-            }
-          };
-
-          requestQueue.push({
-            attemptRequest,
-            resolve,
-            reject,
-          });
-
-          processQueue();
-        });
-      }
-
-      async function processQueue() {
-        if (requestQueue.length === 0) return;
-
-        const { attemptRequest, resolve, reject } = requestQueue.shift();
-
-        try {
-          await attemptRequest();
-        } catch (error) {
-          reject(error);
-        }
-
-        processQueue();
-      }
-
+      // Загрузка данных
       async function loadDealsAndContacts() {
         try {
-          const dealsResponse = await fetchWithRateLimit(
-            `${getApiUrl()}/api/v4/leads?with=contacts`
-          );
-          deals = dealsResponse._embedded.leads || [];
+          // Загрузка сделок с пагинацией
+          let page = 1;
+          let hasMore = true;
+          deals = [];
 
-          const contactIds = [];
-          deals.forEach((deal) => {
-            if (deal._embedded?.contacts) {
-              deal._embedded.contacts.forEach((contact) => {
-                if (!contactIds.includes(contact.id)) {
-                  contactIds.push(contact.id);
-                }
-              });
-            }
-          });
+          while (hasMore) {
+            const response = await fetchWithRateLimit(
+              // `${getApiUrl()}/api/v4/leads?with=contacts&page=${page}&limit=250`
+              `${getApiUrl()}/api/v4/leads?with=contacts&page=${page}&limit=250`
+            );
+
+            deals.push(...(response._embedded?.leads || []));
+            hasMore = response._links?.next?.href ? true : false;
+            page++;
+          }
+
+          // Сбор ID контактов
+          const contactIds = [
+            ...new Set(
+              deals.flatMap(
+                (deal) => deal._embedded?.contacts?.map((c) => c.id) || []
+              )
+            ),
+          ];
 
           if (contactIds.length > 0) {
             contacts = await loadContactsBatch(contactIds);
-          } else {
-            contacts = [];
           }
         } catch (error) {
-          console.error("Ошибка загрузки данных:", error);
-          alert(
-            "Ошибка при загрузке данных. Проверьте консоль для подробностей."
-          );
+          console.error("Load error:", error);
+          throw error;
         }
       }
 
-      // Остальные функции остаются без изменений
       async function loadContactsBatch(contactIds) {
-        const batchSize = 2;
         const allContacts = [];
 
-        for (let i = 0; i < contactIds.length; i += batchSize) {
-          const batch = contactIds.slice(i, i + batchSize);
+        for (const id of contactIds) {
           try {
             const response = await fetchWithRateLimit(
-              `${getApiUrl()}/api/v4/contacts?filter[id]=${batch.join(
-                ","
-              )}&with=custom_fields`
+              `${getApiUrl()}/api/v4/contacts/${id}?with=custom_fields`
             );
-            const loadedContacts = response._embedded?.contacts || [];
-            allContacts.push(...loadedContacts);
+            allContacts.push(response);
 
-            if (i + batchSize < contactIds.length) {
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-            }
+            // Добавляем задержку между запросами
+            await new Promise((resolve) =>
+              setTimeout(resolve, 1000 / config.requestsPerSecond)
+            );
           } catch (error) {
-            console.error(`Ошибка загрузки контактов ${batch}:`, error);
-            for (const id of batch) {
-              try {
-                const singleResponse = await fetchWithRateLimit(
-                  `${getApiUrl()}/api/v4/contacts/${id}?with=custom_fields`
-                );
-                allContacts.push(singleResponse);
-              } catch (e) {
-                console.error(`Не удалось загрузить контакт ${id}:`, e);
-              }
-            }
+            console.error(`Не удалось загрузить контакт ${id}:`, error);
           }
         }
 
         return allContacts;
       }
 
+      // Отображение данных
       function renderDealsTable() {
         const tableBody = document.getElementById("dealsTable");
         tableBody.innerHTML = "";
@@ -317,34 +237,231 @@
           row.dataset.dealId = deal.id;
 
           const dealContacts = getContactsForDeal(deal);
-          const allPhones = dealContacts
-            .map((contact) => getContactPhone(contact))
-            .filter((phone) => phone !== "Нет телефона");
-
-          const contactsDisplay =
-            dealContacts.length > 0
-              ? dealContacts.map((c) => c.id).join(", ")
-              : "Нет";
-
-          const phonesDisplay =
-            allPhones.length > 0 ? allPhones.join(", ") : "Нет телефона";
+          const phones = extractAllPhones(dealContacts);
 
           row.innerHTML = `
-                <td>${deal.id}</td>
-                <td>${deal.name || "Без названия"}</td>
-                <td>${deal.price || 0}₸</td>
-                <td>${contactsDisplay}</td>
-                <td>${
-                  dealContacts.map((c) => c.name || "Без имени").join(", ") ||
-                  "Нет"
-                }</td>
-                <td>${phonesDisplay}</td>
-              `;
+            <td>${deal.id}</td>
+            <td>${deal.name || "Без названия"}</td>
+            <td>${deal.price || 0}₸</td>
+            <td>${dealContacts.map((c) => c.id).join(", ") || "Нет"}</td>
+            <td>${
+              dealContacts.map((c) => c.name || "Без имени").join(", ") || "Нет"
+            }</td>
+            <td>${phones.join(", ") || "Нет телефона"}</td>
+          `;
 
           row.onclick = () => toggleDealDetails(deal.id);
           tableBody.appendChild(row);
         });
       }
+
+      // Работа с телефонами
+      function extractAllPhones(contacts) {
+        const phones = [];
+
+        contacts.forEach((contact) => {
+          const phone = getContactPhone(contact);
+          if (phone !== "Нет телефона") phones.push(phone);
+        });
+
+        return [...new Set(phones)]; // Удаляем дубликаты
+      }
+
+      function getContactPhone(contact) {
+        if (!contact) return "Нет контакта";
+
+        // 1. Проверяем стандартные места
+        const phoneFields = (contact.custom_fields_values || []).filter(
+          (field) =>
+            field.field_code === "PHONE" ||
+            /телефон|phone/i.test(field.field_name || "")
+        );
+
+        for (const field of phoneFields) {
+          const phoneValue = field.values?.[0]?.value;
+          if (phoneValue && isValidPhone(phoneValue)) {
+            return formatPhone(phoneValue);
+          }
+        }
+
+        // 2. Глубокий поиск в других полях
+        const deepSearchFields = (contact.custom_fields_values || [])
+          .filter((field) => field.field_type === "multitext")
+          .flatMap((field) => field.values?.map((v) => v.value) || []);
+
+        for (const value of deepSearchFields) {
+          const phoneMatch = extractPhoneFromString(value);
+          if (phoneMatch) return formatPhone(phoneMatch);
+        }
+
+        return "Нет телефона";
+      }
+
+      function isValidPhone(str) {
+        return /^\+?[\d\s\-\(\)]{7,}$/.test(str);
+      }
+
+      function extractPhoneFromString(str) {
+        if (typeof str !== "string") return null;
+        const match = str.match(/(\+?\d[\d\s\-\(\)]{7,}\d)/);
+        return match ? match[0] : null;
+      }
+
+      function formatPhone(phone) {
+        return phone.replace(/[^\d+]/g, "");
+      }
+
+      // Вспомогательные функции
+      function getApiUrl() {
+        return `https://${config.accountDomain}`;
+      }
+
+      function getContactsForDeal(deal) {
+        return (deal._embedded?.contacts || [])
+          .map((contact) => contacts.find((c) => c.id === contact.id))
+          .filter(Boolean);
+      }
+
+      // async function toggleDealDetails(dealId) {
+      //   const tableBody = document.getElementById("dealsTable");
+      //   const selectedRow = tableBody.querySelector(
+      //     `tr[data-deal-id="${dealId}"]`
+      //   );
+
+      //   // Проверяем, есть ли уже открытая карточка для этой сделки
+      //   const existingDetailsRow = selectedRow.nextElementSibling;
+
+      //   // Если карточка уже открыта - закрываем её
+      //   if (
+      //     existingDetailsRow &&
+      //     existingDetailsRow.classList.contains("expanded-details")
+      //   ) {
+      //     selectedRow.classList.remove("expanded-row");
+      //     existingDetailsRow.remove();
+      //     expandedDealId = null;
+      //     return;
+      //   }
+
+      //   // Закрываем предыдущую открытую карточку, если есть
+      //   if (expandedDealId && expandedDealId !== dealId) {
+      //     const prevRow = tableBody.querySelector(
+      //       `tr[data-deal-id="${expandedDealId}"]`
+      //     );
+      //     if (prevRow) {
+      //       const prevDetailsRow = prevRow.nextElementSibling;
+      //       if (
+      //         prevDetailsRow &&
+      //         prevDetailsRow.classList.contains("expanded-details")
+      //       ) {
+      //         prevRow.classList.remove("expanded-row");
+      //         prevDetailsRow.remove();
+      //       }
+      //     }
+      //   }
+
+      //   // Открываем новую карточку
+      //   selectedRow.classList.add("expanded-row");
+      //   expandedDealId = dealId;
+
+      //   // Создаем строку для деталей с индикатором загрузки
+      //   const detailsRow = document.createElement("tr");
+      //   detailsRow.className = "expanded-details";
+      //   detailsRow.innerHTML = `
+      //         <td colspan="6">
+      //           <div class="d-flex justify-content-center">
+      //             <div class="loading-spinner"></div>
+      //             <span class="ms-2">Загрузка деталей...</span>
+      //           </div>
+      //         </td>
+      //       `;
+
+      //   selectedRow.insertAdjacentElement("afterend", detailsRow);
+
+      //   try {
+      //     const dealDetailsResponse = await fetchWithRateLimit(
+      //       `${getApiUrl()}/api/v4/leads/${dealId}?with=tasks`
+      //     );
+      //     const dealDetails = dealDetailsResponse;
+      //     // const tasks = dealDetails._embedded?.tasks || [];
+      //     // const closestTask = tasks[0];
+      //     const tasks = dealDetails.closest_task_at || [];
+      //     const closestTask = tasks[0];
+
+      //     let taskDate = "";
+      //     let taskStatus = "";
+      //     let statusColor = "gray"; // По умолчанию серый (нет задачи)
+
+      //     if (closestTask) {
+      //       const taskDateObj = new Date(closestTask.complete_till * 1000);
+      //       taskDate = formatDateTime(taskDateObj);
+      //       taskStatus = closestTask.name || "Задача без названия";
+
+      //       const now = new Date();
+      //       const taskTime = taskDateObj.getTime();
+      //       const currentTime = now.getTime();
+
+      //       // Разница в миллисекундах
+      //       const diffMs = taskTime - currentTime;
+      //       // Разница в днях (с округлением вниз)
+      //       const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+      //       // Определяем статус
+      //       if (diffMs < 0) {
+      //         // Просрочено (красный)
+      //         statusColor = "red";
+      //       } else if (diffDays === 0) {
+      //         // Сегодня (зеленый)
+      //         statusColor = "green";
+      //       } else if (diffDays === 1) {
+      //         // Завтра (желтый)
+      //         statusColor = "yellow";
+      //       } else {
+      //         // Будущее (синий)
+      //         statusColor = "blue";
+      //       }
+      //     }
+
+      //     detailsRow.innerHTML = `
+      //           <td colspan="6">
+      //             <div class="p-3">
+      //               <h5>Детали сделки</h5>
+      //               <div class="row">
+      //                 <div class="col-md-6">
+      //                   <p><strong>ID:</strong> ${dealDetails.id}</p>
+      //                   <p><strong>Название:</strong> ${
+      //                     dealDetails.name || "Без названия"
+      //                   }</p>
+      //                   <p><strong>Бюджет:</strong> ${
+      //                     dealDetails.price || 0
+      //                   } ₸</p>
+      //                 </div>
+      //                 <div class="col-md-6">
+      //                   <p><strong>Ближайшая задача:</strong> ${
+      //                     taskStatus || "Нет задач"
+      //                   }</p>
+      //                   <p><strong>Дата задачи:</strong> ${
+      //                     taskDate || "Нет"
+      //                   }</p>
+      //                   <p><strong>Статус:</strong>
+      //                     <svg class="status-circle" viewBox="0 0 16 16">
+      //                       <circle cx="8" cy="8" r="8" fill="${statusColor}"/>
+      //                     </svg>
+      //                     ${getStatusText(statusColor)}
+      //                   </p>
+      //                 </div>
+      //               </div>
+      //             </div>
+      //           </td>
+      //         `;
+      //   } catch (error) {
+      //     console.error("Error loading deal details:", error);
+      //     detailsRow.innerHTML = `
+      //           <td colspan="6" class="text-danger">
+      //             Ошибка при загрузке деталей сделки. Проверьте консоль для подробностей.
+      //           </td>
+      //         `;
+      //   }
+      // }
 
       async function toggleDealDetails(dealId) {
         const tableBody = document.getElementById("dealsTable");
@@ -392,92 +509,100 @@
         detailsRow.className = "expanded-details";
         detailsRow.innerHTML = `
         <td colspan="6">
-          <div class="d-flex justify-content-center">
-            <div class="loading-spinner"></div>
-            <span class="ms-2">Загрузка деталей...</span>
-          </div>
+            <div class="d-flex justify-content-center">
+                <div class="loading-spinner"></div>
+                <span class="ms-2">Загрузка деталей...</span>
+            </div>
         </td>
-      `;
+    `;
 
         selectedRow.insertAdjacentElement("afterend", detailsRow);
 
         try {
+          // Загружаем данные сделки
           const dealDetailsResponse = await fetchWithRateLimit(
-            `${getApiUrl()}/api/v4/leads/${dealId}?with=tasks`
+            `${getApiUrl()}/api/v4/leads/${dealId}`
           );
           const dealDetails = dealDetailsResponse;
-          const tasks = dealDetails._embedded?.tasks || [];
-          const closestTask = tasks[0];
 
-          let taskDate = "";
-          let taskStatus = "";
-          let statusColor = "gray"; // По умолчанию серый (нет задачи)
+          // Определяем статус задачи
+          let taskDate = "Нет задачи";
+          let statusColor = "red"; // по умолчанию красный (нет задачи или просрочена)
 
-          if (closestTask) {
-            const taskDateObj = new Date(closestTask.complete_till * 1000);
-            taskDate = formatDateTime(taskDateObj);
-            taskStatus = closestTask.name || "Задача без названия";
+          if (dealDetails.closest_task_at) {
+            const taskDateObj = new Date(dealDetails.closest_task_at * 1000);
+            taskDate = formatDate(taskDateObj);
 
             const now = new Date();
             const taskTime = taskDateObj.getTime();
             const currentTime = now.getTime();
-
-            // Разница в миллисекундах
             const diffMs = taskTime - currentTime;
-            // Разница в днях (с округлением вниз)
             const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-            // Определяем статус
-            if (diffMs < 0) {
-              // Просрочено (красный)
-              statusColor = "red";
-            } else if (diffDays === 0) {
-              // Сегодня (зеленый)
+            if (diffDays === 0) {
+              // Задача на сегодня
               statusColor = "green";
-            } else if (diffDays === 1) {
-              // Завтра (желтый)
+            } else if (diffDays > 0) {
+              // Задача в будущем (более чем через день)
               statusColor = "yellow";
-            } else {
-              // Будущее (синий)
-              statusColor = "blue";
             }
+            // Если diffDays < 0 - оставляем красный (просрочено)
           }
 
+          // Обновляем карточку с данными
           detailsRow.innerHTML = `
-          <td colspan="6">
-            <div class="p-3">
-              <h5>Детали сделки</h5>
-              <div class="row">
-                <div class="col-md-6">
-                  <p><strong>ID:</strong> ${dealDetails.id}</p>
-                  <p><strong>Название:</strong> ${
-                    dealDetails.name || "Без названия"
-                  }</p>
-                  <p><strong>Бюджет:</strong> ${dealDetails.price || 0} ₸</p>
+            <td colspan="6">
+                <div class="p-3">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <p><strong>ID:</strong> ${dealDetails.id}</p>
+                            <p><strong>Название:</strong> ${
+                              dealDetails.name || "Без названия"
+                            }</p>
+                        </div>
+                        <div class="col-md-6">
+                            <p><strong>Дата задачи:</strong> ${taskDate}</p>
+                            <p><strong>Статус:</strong>
+                                <svg class="status-circle" viewBox="0 0 16 16" width="16" height="16">
+                                    <circle cx="8" cy="8" r="8" fill="${statusColor}"/>
+                                </svg>
+                                ${getStatusText(statusColor)}
+                            </p>
+                        </div>
+                    </div>
                 </div>
-                <div class="col-md-6">
-                  <p><strong>Ближайшая задача:</strong> ${
-                    taskStatus || "Нет задач"
-                  }</p>
-                  <p><strong>Дата задачи:</strong> ${taskDate || "Нет"}</p>
-                  <p><strong>Статус:</strong>
-                    <svg class="status-circle" viewBox="0 0 16 16">
-                      <circle cx="8" cy="8" r="8" fill="${statusColor}"/>
-                    </svg>
-                    ${getStatusText(statusColor)}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </td>
+            </td>
         `;
         } catch (error) {
           console.error("Error loading deal details:", error);
           detailsRow.innerHTML = `
-          <td colspan="6" class="text-danger">
-            Ошибка при загрузке деталей сделки. Проверьте консоль для подробностей.
-          </td>
+            <td colspan="6" class="text-danger">
+                Ошибка при загрузке деталей сделки. Проверьте консоль для подробностей.
+            </td>
         `;
+        }
+      }
+
+      // Функция для форматирования даты в DD.MM.YYYY
+      function formatDate(date) {
+        if (!date) return "";
+        const day = date.getDate().toString().padStart(2, "0");
+        const month = (date.getMonth() + 1).toString().padStart(2, "0");
+        const year = date.getFullYear();
+        return `${day}.${month}.${year}`;
+      }
+
+      // Функция для получения текста статуса
+      function getStatusText(color) {
+        switch (color) {
+          case "red":
+            return "Просрочено";
+          case "green":
+            return "Сегодня";
+          case "yellow":
+            return "Будущее";
+          default:
+            return "Нет задачи";
         }
       }
 
@@ -507,25 +632,65 @@
       function getContactPhone(contact) {
         if (!contact) return "Нет контакта";
 
-        const phoneFields =
-          contact.custom_fields_values?.filter(
-            (f) =>
-              f.field_code === "PHONE" ||
-              /телефон|phone|teneфон/i.test(f.field_name || "") ||
-              f.field_type === "multitext"
-          ) || [];
+        // 1. Проверяем все возможные места, где может быть телефон
+        const potentialFields = [
+          // Стандартные и кастомные поля с телефонами
+          ...(contact.custom_fields_values || []),
+          // Другие возможные места (если есть)
+          ...(contact.phone_numbers || []),
+        ];
 
-        for (const field of phoneFields) {
-          if (field.values?.length > 0 && field.values[0].value) {
-            return formatPhone(field.values[0].value);
+        // 2. Перебираем все поля контакта
+        for (const field of potentialFields) {
+          // Для кастомных полей
+          if (field.values) {
+            for (const valueObj of field.values) {
+              if (valueObj.value && isPhoneNumber(valueObj.value)) {
+                return formatPhone(valueObj.value);
+              }
+            }
+          }
+          // Для простых полей (если phone_numbers и т.д.)
+          else if (field.value && isPhoneNumber(field.value)) {
+            return formatPhone(field.value);
+          }
+        }
+
+        // 3. Если ничего не нашли - пробуем "выдрать" номер из любого строкового поля
+        const stringFields = [
+          contact.name,
+          contact.first_name,
+          contact.last_name,
+          ...(contact.custom_fields_values?.flatMap(
+            (f) => f.values?.map((v) => v.value) || []
+          ) || []),
+        ].filter(Boolean);
+
+        for (const value of stringFields) {
+          const phoneMatch = extractPhoneFromString(value);
+          if (phoneMatch) {
+            return formatPhone(phoneMatch);
           }
         }
 
         return "Нет телефона";
       }
 
+      // Проверяет, что строка похожа на телефон
+      function isPhoneNumber(str) {
+        return /^\+?[\d\s\-\(\)]{7,}$/.test(str);
+      }
+
+      // Извлекает телефон из произвольной строки
+      function extractPhoneFromString(str) {
+        const phoneRegex = /(\+?\d[\d\s\-\(\)]{7,}\d)/;
+        const match = str.match(phoneRegex);
+        return match ? match[0] : null;
+      }
+
+      // Форматирует телефон (оставляет только цифры и +)
       function formatPhone(phone) {
-        return phone.replace(/[^0-9+]/g, "");
+        return phone.replace(/[^\d+]/g, "");
       }
 
       function formatDate(date) {
